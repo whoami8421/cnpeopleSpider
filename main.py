@@ -21,7 +21,7 @@ class cnpeople:
 
     def __init__(self):
         # 关键词列表
-        self.keywords = ['成都',]
+        self.keywords = ['富川',]
 
         self.MainUrlList = []
         self.HostHeader = 'http://search.people.com.cn'
@@ -29,16 +29,19 @@ class cnpeople:
         # 页面url队列
         self.PageUrlQueue = queue.Queue()
         self.PageUrlQueueLock = threading.Lock()
-        # 爬取每栏url的线程数
-        self.PageUrlThreads = 4
+        # 线程数设置
+        self.PageUrlThreads = 16
+        self.AnalyseThreads = 16
+        self.PicDownloadThreads = 4
+        self.WriteDataThreads = 4
         # 文章url队列，后期注意大小分配
-        self.ArticleUrlQueue = queue.Queue()
+        self.ArticleUrlQueue = queue.Queue(1000)
         self.ArticleUrlQueueLock = threading.Lock()
         # 写入数据队列，字典类型{}
-        self.WriteDataQueue = queue.Queue()
+        self.WriteDataQueue = queue.Queue(1000)
         self.WriteDataQueueLock = threading.Lock()
         # 图片队列，保存每个片的url和存储位置信息，字典类型
-        self.PicturesQueue = queue.Queue()
+        self.PicturesQueue = queue.Queue(1000)
         self.PicturesQueueLock = threading.Lock()
         self.QueueTimeout = 1
         self.count = 0
@@ -114,13 +117,10 @@ class cnpeople:
     def PageInIt(self,main_url):
         print('初始化页面数据')
         pattern = re.compile(r'本次检索为您找到 <b>(\d+?)</b> .+? 的页面,用时.+秒')
-        try:
-            res = requests.get(main_url)
-            res.encoding = tools.cntools.GetCharset(res.content)
-        except:
-            print('FirstPage Error.')
-            traceback.print_exc()
-            return {}
+        res = RequestGet(main_url)
+        res.encoding = tools.cntools.GetCharset(res.content)
+        if not res:
+           return {}
         main_html = BeautifulSoup(res.text,'html5lib')
         res = main_html.find('div', class_='fl w180')
         search_box = main_html.find('div', class_='searchbar_text')
@@ -135,12 +135,12 @@ class cnpeople:
             if_continue = False
             for i in range(3):
                 try:
-                    page_res = requests.get(url=page_url,timeout=1)
+                    page_res = RequestGet(url=page_url)
                 except:
                     if i==2:
                         break
                     continue
-                if page_res.url == self.NoReUrl:
+                if page_res.url == self.NoReUrl or not page_res:
                     if_continue = True
                     break
                 if page_res.url == self.ErrorNullUrl:
@@ -160,9 +160,18 @@ class cnpeople:
                 'save_path': save_path
             }
             #tools.cntools.logger(str(data),log_file='./log/count.txt')
-            self.PageUrlQueueLock.acquire()
-            self.PageUrlQueue.put(data)
-            self.PageUrlQueueLock.release()
+
+            while(True):
+                try:
+                    #self.PageUrlQueueLock.acquire()
+                    self.PageUrlQueue.put(data,timeout=1)
+                    #self.PageUrlQueueLock.release()
+                    break
+                except queue.Full:
+                    #self.PageUrlQueueLock.release()
+                    print('PageUrlQueue is Full.')
+                    time.sleep(1)
+                    continue
         print('页面初始化完成 ')
 
 
@@ -200,9 +209,18 @@ class cnpeople:
             }
             #print('put data:{},size = {}'.format(data,self.ArticleUrlQueue.qsize()))
             #print('put article_url:{}'.format(data))
-            self.ArticleUrlQueueLock.acquire()
-            self.ArticleUrlQueue.put(data)
-            self.ArticleUrlQueueLock.release()
+
+            while(True):
+                try:
+                    #self.ArticleUrlQueueLock.acquire()
+                    self.ArticleUrlQueue.put(data,timeout=1)
+                    #self.ArticleUrlQueueLock.release()
+                    break
+                except queue.Full:
+                    #self.ArticleUrlQueueLock.release()
+                    print('ArticleUrlQueue is Full.')
+                    time.sleep(1)
+                    continue
         page_box = result.find('div', class_='show_nav_bar')
         if not page_box:
             return
@@ -228,20 +246,18 @@ class cnpeople:
             #print(f'merge url = {page_url}')
             if_continue = False
             for i in range(3):
-                try:
-                    res = requests.get(page_url,timeout=2)
-                    if res.url == self.ErrorNullUrl:
-                        if_continue = True
-                    if res.url == self.NoReUrl:
-                        if_continue = True
-                        break
+                res = RequestGet(page_url)
+                if not res:
+                    if_continue=True
                     break
-                except:
-                    print('GetContentUrlsRange Error.')
-                    traceback.print_exc()
-                    time.sleep(0.5)
-                    if(i>=2):
-                        if_continue=True
+                if res.url == self.ErrorNullUrl:
+                    continue
+                if res.url == self.NoReUrl:
+                    if_continue = True
+                    break
+                if (i > 2):
+                    if_continue = True
+                break
             if if_continue:
                 print('continue.')
                 continue
@@ -253,7 +269,9 @@ class cnpeople:
             urls.remove(urls[0])
             # 去重+筛选
             filt = ['http://renwu', 'http://lottery']
+            t1 = time.time()
             for url in urls:
+
                 if url.a['href'] not in url_list:
                     if_use = True
                     for f in filt:
@@ -262,28 +280,45 @@ class cnpeople:
                     if if_use:
                         url_list.append(url.a['href'])
             for url in url_list:
+
                 data = {
                     'save_path':save_path,
                     'article_url':url
                 }
                 #print('put data:{},size = {}'.format(data,self.ArticleUrlQueue.qsize()))
                 #print('put article_url:{}'.format(data))
-                self.ArticleUrlQueueLock.acquire()
-                self.ArticleUrlQueue.put(data)
-                print(f'put data={data}')
-                self.ArticleUrlQueueLock.release()
+
+                while(True):
+                    try:
+
+
+                        #self.ArticleUrlQueueLock.acquire()
+                        #with threading.RLock():
+
+                        self.ArticleUrlQueue.put(data,timeout=1)
+                        #print(f'put data={data}')
+                        # self.ArticleUrlQueueLock.release()
+                        break
+                    except queue.Full:
+                        #self.ArticleUrlQueueLock.release()
+                        print('ArticleUrlQueue is Full.')
+                        time.sleep(1)
+                        continue
+            t3 = time.time()
+        return
 
 
     def GetPageThreads(self):
         if_start = True
         child_threads =[]
         while(True):
-            print('GetPageThreads,获取分栏数据并开启线程')
-            self.PageUrlQueueLock.acquire()
+            #print('GetPageThreads,获取分栏数据并开启线程')
             try:
-                data = self.PageUrlQueue.get(timeout=5)
+                #self.PageUrlQueueLock.acquire()
+                data = self.PageUrlQueue.get(timeout=1)
+                #self.PageUrlQueueLock.release()
             except queue.Empty:
-                self.PageUrlQueueLock.release()
+                #self.PageUrlQueueLock.release()
                 #开始标志位1，子线程为空，说明page初始化未抓取到数据
                 if if_start and not child_threads:
                     print('init page failed.')
@@ -302,7 +337,7 @@ class cnpeople:
                         return
                 else:
                     continue
-            self.PageUrlQueueLock.release()
+
             if_start = False
             start_url = data['page_url']
             save_path = data['save_path']
@@ -310,23 +345,30 @@ class cnpeople:
             page_count = ceil(url_count/20)
             cut_len = ceil(page_count/self.PageUrlThreads)
             #print(f'{page_count},{cut_len}')
+            #print(f'计算分组,总页数:{page_count}')
             cut_list = tools.cntools.NumListCut(1,page_count,cut_len)
+            #print(f'分组完成：{cut_list}')
             for tuple_range in cut_list:
                 #间隔5s检测，保证子线程不多于4个
                 #print('开启分栏线程')
                 while(len(child_threads)>self.PageUrlThreads):
-                    #print(f'分栏线程数{len(child_threads)}>4，等待')
+                    #print(f'分栏线程数{len(child_threads)}>{self.PageUrlThreads}，等待')
+                    exit_threads=[]
                     for thread in child_threads:
                         if not thread.is_alive():
-                            child_threads.remove(thread)
-                    time.sleep(5)
+                            exit_threads.append(thread)
+                    for e_t in exit_threads:
+                        child_threads.remove(e_t)
+                    time.sleep(1)
+
                 t = threading.Thread(target=self.GetContentUrlsRange(start_url,tuple_range,save_path))
                 t.start()
+                #print('线程已开启')
                 child_threads.append(t)
 
     # get pictures url list from str_TAG area
     def getPicUrls(self,main_url,str_TAG,save_path):
-        print('get_pic_urls.')
+        #print('get_pic_urls.')
         result=[]
         host_url = re.compile(r'http.+?people\.com\.cn').findall(main_url)[0]
         pic = re.compile(r'src="(.+?\.jpg)"').findall(str_TAG)
@@ -341,12 +383,20 @@ class cnpeople:
                 'pic_url':pic_url,
                 'save_path':save_path
             }
-            #print('pic ac')
-            self.PicturesQueueLock.acquire()
-            #print('pic in')
-            self.PicturesQueue.put(pic_data)
-            self.PicturesQueueLock.release()
-            #print('pic out')
+            while(True):
+                try:
+                    #print('pic ac')
+                    #self.PicturesQueueLock.acquire()
+                    #print('pic in')
+                    self.PicturesQueue.put(pic_data,timeout=1)
+                    #self.PicturesQueueLock.release()
+                    break
+                    #print('pic out')
+                except queue.Full:
+                    #self.PicturesQueueLock.release()
+                    print('PicturesQueue is Full.')
+                    time.sleep(1)
+                    continue
         #print('get_pic_urls.out')
         return result
 
@@ -354,21 +404,26 @@ class cnpeople:
     def ArticleAnalys(self):
         while(True):
         #取数据,注意处理队列为空的情况
-            print('ArticleAnalys.')
+            print(f'ArticleAnalys.'
+                  f'分页url：{self.PageUrlQueue.qsize()},'
+                  f'文章url：{self.ArticleUrlQueue.qsize()},'
+                  f'写入数据：{self.WriteDataQueue.qsize()},'
+                  f'图片：{self.PicturesQueue.qsize()}'
+                  )
             count = 5
             if_continue = False
             while(True):
                 try:
-                    self.ArticleUrlQueueLock.acquire()
+                    #self.ArticleUrlQueueLock.acquire()
                     #print('count = {}'.format(count))
                     ArticleData = self.ArticleUrlQueue.get(timeout=self.QueueTimeout)
-                    print(f'get article data:{ArticleData}')
+                    #print(f'get article data:{ArticleData}')
                     # self.count+=1
                     # print('count = {}'.format(self.count))
-                    self.ArticleUrlQueueLock.release()
+                    #self.ArticleUrlQueueLock.release()
                     break
                 except queue.Empty:
-                    self.ArticleUrlQueueLock.release()
+                    # self.ArticleUrlQueueLock.release()
                     page_event = self.GetPageThreadsEvent.wait(1)
                     if not page_event:
                         print('数据data获取完毕.')
@@ -380,6 +435,7 @@ class cnpeople:
                         break
                         # print('ArticleAnalys is exit.')
                         # return
+                    time.sleep(1)
                     continue
             if if_continue:
                 continue
@@ -418,40 +474,40 @@ class cnpeople:
             }
             # print('picHealth={},picchina={}'.format(picHealth,picchina))
             if leaders:
-                print('put to leaders.\n')
+                #print('put to leaders.\n')
                 try:
                     self.leaders(last_data,this_data)
                 except:
                     tools.cntools.logger('leaders()--'+traceback.format_exc())
             if picchina:
-                print('put to picchina.\n')
+                #print('put to picchina.\n')
                 try:
                     self.picchina(last_data,this_data)
                 except:
                     tools.cntools.logger('picchina()--'+traceback.format_exc())
             if health:
-                print('put to health.\n')
+                #print('put to health.\n')
                 try:
                     self.health(last_data,this_data)
                 except:
                     tools.cntools.logger('health()--'+traceback.format_exc())
 
             if npc:
-                print('put to npc.\n')
+                #print('put to npc.\n')
                 try:
                     self.npc(last_data,this_data)
                 except:
                     tools.cntools.logger('npc()--'+traceback.format_exc())
 
             if cppcc:
-                print('put to cppcc.\n')
+                #print('put to cppcc.\n')
                 try:
                     self.cppcc(last_data,this_data)
                 except:
                     tools.cntools.logger('cppcc()--'+traceback.format_exc())
 
             if picHealth:
-                print('put to picHeath.\n')
+                #print('put to picHeath.\n')
                 try:
                     self.picHealth(last_data,this_data)
                 except:
@@ -530,10 +586,18 @@ class cnpeople:
             item['article_url'] = article_url
             item['pic_urls'] = picUrlList
             item['save_path'] = save_path
-            print('put write data = {}'.format(item))
-            self.WriteDataQueueLock.acquire()
-            self.WriteDataQueue.put(item)
-            self.WriteDataQueueLock.release()
+            while(True):
+                try:
+                    #self.WriteDataQueueLock.acquire()
+                    self.WriteDataQueue.put(item,timeout=1)
+                    #print('put write data = {}'.format(item))
+                    #self.WriteDataQueueLock.release()
+                    break
+                except queue.Full:
+                    #self.WriteDataQueueLock.release()
+                    print('WriteDataQueue is Full.')
+                    time.sleep(1)
+                    continue
             return
 
     # 人民健康网
@@ -559,9 +623,18 @@ class cnpeople:
         item['article_url'] = article_url
         item['pic_urls'] = pic_urls
         item['save_path'] = save_path
-        self.WriteDataQueueLock.acquire()
-        self.WriteDataQueue.put(item)
-        self.WriteDataQueueLock.release()
+        while (True):
+            try:
+                #self.WriteDataQueueLock.acquire()
+                self.WriteDataQueue.put(item,timeout=1)
+                #print('put write data = {}'.format(item))
+                #self.WriteDataQueueLock.release()
+                break
+            except queue.Full:
+                #self.WriteDataQueueLock.release()
+                print('WriteDataQueue is Full.')
+                time.sleep(1)
+                continue
         return
 
     # 图片展区网页http://health.people.com.cn/n1/2019/0617/c14739-31156180.html
@@ -605,9 +678,18 @@ class cnpeople:
             item['article_url'] = article_url
             item['pic_urls'] = pic_urls
             item['save_path'] = save_path
-            self.WriteDataQueueLock.acquire()
-            self.WriteDataQueue.put(item)
-            self.WriteDataQueueLock.release()
+            while (True):
+                try:
+                    #self.WriteDataQueueLock.acquire()
+                    self.WriteDataQueue.put(item,timeout=1)
+                    #print('put write data = {}'.format(item))
+                    #self.WriteDataQueueLock.release()
+                    break
+                except queue.Full:
+                    #self.WriteDataQueueLock.release()
+                    print('WriteDataQueue is Full.')
+                    time.sleep(1)
+                    continue
             return
 
     # 旧版人大新闻网、旧版人民网招商频道、旧版开放区、领导分区
@@ -655,9 +737,18 @@ class cnpeople:
         item['article_url'] = article_url
         item['pic_urls'] = pic_urls
         item['save_path'] = save_path
-        self.WriteDataQueueLock.acquire()
-        self.WriteDataQueue.put(item)
-        self.WriteDataQueueLock.release()
+        while (True):
+            try:
+                #self.WriteDataQueueLock.acquire()
+                self.WriteDataQueue.put(item,timeout=1)
+                #print('put write data = {}'.format(item))
+                #self.WriteDataQueueLock.release()
+                break
+            except queue.Full:
+                #self.WriteDataQueueLock.release()
+                print('WriteDataQueue is Full.')
+                time.sleep(1)
+                continue
         return
 
     # 图说中国、图片频道、华人华侨（图片）
@@ -714,9 +805,18 @@ class cnpeople:
             item['pic_urls'] = picUrlList
             item['save_path'] = save_path
 
-            self.WriteDataQueueLock.acquire()
-            self.WriteDataQueue.put(item)
-            self.WriteDataQueueLock.release()
+            while (True):
+                try:
+                    #self.WriteDataQueueLock.acquire()
+                    self.WriteDataQueue.put(item,timeout=1)
+                    #print('put write data = {}'.format(item))
+                    #self.WriteDataQueueLock.release()
+                    break
+                except queue.Full:
+                    #self.WriteDataQueueLock.release()
+                    print('WriteDataQueue is Full.')
+                    time.sleep(1)
+                    continue
             return
 
     # 中国政协新闻网
@@ -746,25 +846,34 @@ class cnpeople:
         item['article_url'] = article_url
         item['pic_urls'] = pic_urls
         item['save_path'] = save_path
-        self.WriteDataQueueLock.acquire()
-        self.WriteDataQueue.put(item)
-        self.WriteDataQueueLock.release()
+        while (True):
+            try:
+                #self.WriteDataQueueLock.acquire()
+                self.WriteDataQueue.put(item,timeout=1)
+                #print('put write data = {}'.format(item))
+                #self.WriteDataQueueLock.release()
+                break
+            except queue.Full:
+                #self.WriteDataQueueLock.release()
+                print('WriteDataQueue is Full.')
+                time.sleep(1)
+                continue
         return
 
 
     #download pictures
     def PicturesDownload(self):
         while(True):
-            print('download picture.')
+            #print('download picture.')
             # for i in range(5):
 
             try:
-                self.PicturesQueueLock.acquire()
+                #self.PicturesQueueLock.acquire()
                 pic_data = self.PicturesQueue.get(timeout=1)
-                self.PicturesQueueLock.release()
+                #self.PicturesQueueLock.release()
                 # break
             except queue.Empty:
-                self.PicturesQueueLock.release()
+                #self.PicturesQueueLock.release()
                 #print('PicturesQueue is Empty.')
                 if_end = True
                 for event in self.ArticleAnalysThreadList:
@@ -793,7 +902,11 @@ class cnpeople:
             if not res:
                 continue
             if not os.path.exists(save_path):
-                os.makedirs(save_path)
+                try:
+                    os.makedirs(save_path)
+                except:
+                    tools.cntools.logger(traceback.format_exc())
+
             fp = open(abs_path,'wb')
             fp.write(res.content)
             fp.close()
@@ -805,12 +918,12 @@ class cnpeople:
             # for i in range(5):
             #print('WriteData.')
             try:
-                self.WriteDataQueueLock.acquire()
+                #self.WriteDataQueueLock.acquire()
                 data = self.WriteDataQueue.get(timeout=1)
-                self.WriteDataQueueLock.release()
+                #self.WriteDataQueueLock.release()
                 # break
             except queue.Empty:
-                self.WriteDataQueueLock.release()
+                #self.WriteDataQueueLock.release()
                 #print('WriteDataQueue is Empty.')
                 if_end = True
                 for event in self.ArticleAnalysThreadList:
@@ -832,6 +945,7 @@ class cnpeople:
             pic_urls = data['pic_urls']
             save_path = data['save_path']
             obs_file = save_path+'data.csv'
+            print(f'write data:{save_path}:{article_url},{title}')
             if not os.path.exists(save_path):
                 try:
                     os.makedirs(save_path)
@@ -892,16 +1006,17 @@ class cnpeople:
         t1 = threading.Thread(target=self.GetPageThreads)
         t_list.append(t1)
         # 文章解析线程数：4
-        for i in range(4):
+        for i in range(self.AnalyseThreads):
             t2 = threading.Thread(target=self.ArticleAnalys)
-            # t2.start()
             t_list.append(t2)
             self.ArticleAnalysThreadList.append(t2)
 
-        t3 = threading.Thread(target=self.WriteData)
-        t4 = threading.Thread(target=self.PicturesDownload)
-        t_list.append(t3)
-        t_list.append(t4)
+        for i in range(self.PicDownloadThreads):
+            t4 = threading.Thread(target=self.PicturesDownload)
+            t_list.append(t4)
+        for i in range(self.WriteDataThreads):
+            t3 = threading.Thread(target=self.WriteData)
+            t_list.append(t3)
         for thread in t_list:
             thread.start()
         for thread in t_list:
