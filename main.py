@@ -21,7 +21,11 @@ class cnpeople:
 
     def __init__(self):
         # 关键词列表
-        self.keywords = ['富川',]
+        self.keywords = ['绵阳',]
+            # ['德阳','都江堰','彭州','崇州','邛崃','简阳',
+            #             '江油','广汉','什邡','绵竹','隆昌',
+            #             '峨眉山','阆中','万源','马尔康',
+            #             '康定','西昌','华蓥',]
 
         self.MainUrlList = []
         self.HostHeader = 'http://search.people.com.cn'
@@ -30,18 +34,19 @@ class cnpeople:
         self.PageUrlQueue = queue.Queue()
         self.PageUrlQueueLock = threading.Lock()
         # 线程数设置
-        self.PageUrlThreads = 16
-        self.AnalyseThreads = 16
-        self.PicDownloadThreads = 4
-        self.WriteDataThreads = 4
+        self.PageUrlThreads = 4
+        self.AnalyseThreads = 20
+        self.PicDownloadThreads = 10
+        self.WriteDataThreads = 8
         # 文章url队列，后期注意大小分配
-        self.ArticleUrlQueue = queue.Queue(1000)
+        self.ArticleUrlQueue = queue.Queue()
         self.ArticleUrlQueueLock = threading.Lock()
         # 写入数据队列，字典类型{}
-        self.WriteDataQueue = queue.Queue(1000)
+        self.WriteDataQueue = queue.Queue()
         self.WriteDataQueueLock = threading.Lock()
+        self.WriteDataLock = threading.Lock()
         # 图片队列，保存每个片的url和存储位置信息，字典类型
-        self.PicturesQueue = queue.Queue(1000)
+        self.PicturesQueue = queue.Queue()
         self.PicturesQueueLock = threading.Lock()
         self.QueueTimeout = 1
         self.count = 0
@@ -89,10 +94,21 @@ class cnpeople:
     # get first pagelist
     # 搜索页面下的每个分栏
     # {url:save_path}
+
+    def PicFilter(self,pic_url):
+        if_raw = True
+        for f in self.filter_box:
+            if (f in pic_url):
+                if_raw = False
+                break
+        if if_raw:
+            return pic_url
+        else:
+            return None
     def GetFirstPage(self,url) -> dict:
         try:
             res = requests.get(url)
-            res.encoding = tools.cntools.GetCharset(res.content)
+            res.encoding = 'GB2312'
         except:
             print('FirstPage Error.')
             traceback.print_exc()
@@ -118,9 +134,9 @@ class cnpeople:
         print('初始化页面数据')
         pattern = re.compile(r'本次检索为您找到 <b>(\d+?)</b> .+? 的页面,用时.+秒')
         res = RequestGet(main_url)
-        res.encoding = tools.cntools.GetCharset(res.content)
         if not res:
            return {}
+        res.encoding = 'GB2312'
         main_html = BeautifulSoup(res.text,'html5lib')
         res = main_html.find('div', class_='fl w180')
         search_box = main_html.find('div', class_='searchbar_text')
@@ -135,7 +151,7 @@ class cnpeople:
             if_continue = False
             for i in range(3):
                 try:
-                    page_res = RequestGet(url=page_url)
+                    page_res = requests.get(url=page_url)
                 except:
                     if i==2:
                         break
@@ -151,7 +167,7 @@ class cnpeople:
                 break
             if if_continue:
                 continue
-            page_res.encoding = tools.cntools.GetCharset(page_res.content)
+            page_res.encoding = 'GB2312'
             # print('main_url = {}\nres.url = {}'.format(main_url,page_res.url))
             page_count = int(pattern.findall(page_res.text)[0])
             data = {
@@ -181,7 +197,7 @@ class cnpeople:
         #print(f'get content url:{start_url}')
         while(True):
             res = requests.get(start_url)
-            res.encoding = tools.cntools.GetCharset(res.content)
+            res.encoding = 'GB2312'
             main_html = BeautifulSoup(res.text,'html5lib')
             if_error = main_html.find('img', alt='Error')
             if_value = main_html.find('h3', class_='ts0328')
@@ -261,7 +277,7 @@ class cnpeople:
             if if_continue:
                 print('continue.')
                 continue
-            res.encoding = tools.cntools.GetCharset(res.content)
+            res.encoding = 'GB2312'
             main_html = BeautifulSoup(res.text,'html5lib')
             url_list = []
             result = main_html.find('div', class_='fr w800')
@@ -378,6 +394,9 @@ class cnpeople:
             pic_url = url
             if not url.startswith('http'):
                 pic_url = host_url+url
+            pic_url = self.PicFilter(pic_url)
+            if not pic_url:
+                continue
             result.append(pic_url)
             pic_data = {
                 'pic_url':pic_url,
@@ -401,130 +420,132 @@ class cnpeople:
         return result
 
     # 根据文章结构进行处理
-    def ArticleAnalys(self):
+    def ArticleAnalys(self,name):
         while(True):
-        #取数据,注意处理队列为空的情况
-            print(f'ArticleAnalys.'
-                  f'分页url：{self.PageUrlQueue.qsize()},'
-                  f'文章url：{self.ArticleUrlQueue.qsize()},'
-                  f'写入数据：{self.WriteDataQueue.qsize()},'
-                  f'图片：{self.PicturesQueue.qsize()}'
-                  )
-            count = 5
-            if_continue = False
-            while(True):
-                try:
-                    #self.ArticleUrlQueueLock.acquire()
-                    #print('count = {}'.format(count))
-                    ArticleData = self.ArticleUrlQueue.get(timeout=self.QueueTimeout)
-                    #print(f'get article data:{ArticleData}')
-                    # self.count+=1
-                    # print('count = {}'.format(self.count))
-                    #self.ArticleUrlQueueLock.release()
-                    break
-                except queue.Empty:
-                    # self.ArticleUrlQueueLock.release()
-                    page_event = self.GetPageThreadsEvent.wait(1)
-                    if not page_event:
-                        print('数据data获取完毕.')
-                        return
-                    count=count-1
-                    #print('ArticleUrlQueue is Empty.')
-                    if count<0:
-                        if_continue = True
+            try:
+                #取数据,注意处理队列为空的情况
+                print(f'Thread ({name}): '
+                      f'分页url：{self.PageUrlQueue.qsize()},'
+                      f'文章url：{self.ArticleUrlQueue.qsize()}'
+                      #f'写入数据：{self.WriteDataQueue.qsize()},'
+                      #f'图片：{self.PicturesQueue.qsize()}'
+                      )
+                count = 5
+                if_continue = False
+                while(True):
+                    try:
+                        #self.ArticleUrlQueueLock.acquire()
+                        #print('count = {}'.format(count))
+                        ArticleData = self.ArticleUrlQueue.get(timeout=self.QueueTimeout)
+                        #print(f'get article data:{ArticleData}')
+                        # self.count+=1
+                        # print('count = {}'.format(self.count))
+                        #self.ArticleUrlQueueLock.release()
                         break
-                        # print('ArticleAnalys is exit.')
-                        # return
-                    time.sleep(1)
+                    except queue.Empty:
+                        # self.ArticleUrlQueueLock.release()
+                        page_event = self.GetPageThreadsEvent.wait(1)
+                        if not page_event:
+                            print('数据data获取完毕.')
+                            return
+                        count=count-1
+                        #print('ArticleUrlQueue is Empty.')
+                        if count<0:
+                            if_continue = True
+                            break
+                            # print('ArticleAnalys is exit.')
+                            # return
+                        time.sleep(1)
+                        continue
+                if if_continue:
                     continue
-            if if_continue:
-                continue
-            article_url = ArticleData['article_url']
-            save_path = ArticleData['save_path']
-            if_continue = False
-            for i in range(3):
+                article_url = ArticleData['article_url']
+                save_path = ArticleData['save_path']
+                if_continue = False
+
                 try:
-                    res = requests.get(article_url,headers = self.headers,timeout = 1)
-                    res.encoding = tools.cntools.GetCharset(res.content)
-                    break
-                except:
-                    self.headers['User-Agent'] = random.choice(self.user_agent_list)
-                    print('ArticleAnalys request error.')
-                    #traceback.print_exc()
-                    time.sleep(0.5)
-                    if i>=2:
+                    res = RequestGet(article_url,timeout = 1)
+                    if not res:
                         if_continue = True
-            if if_continue:
-                continue
-            html = BeautifulSoup(res.text, 'html5lib')
-            leaders = html.find('div', class_='box_con')
-            picchina = html.find('div', class_='content clear clearfix')
-            health = html.find('div', class_='artDet')
-            npc = html.find('div', id='p_content')
-            cppcc = html.find('font', class_='show_c')
-            picHealth = html.find('div', class_='text width978 clearfix')
-            last_data = {
-                'article':'',
-                'pic_urls':[]
-            }
-            this_data = {
-                'save_path':save_path,
-                'article_url':article_url,
-                'html':html
-            }
-            # print('picHealth={},picchina={}'.format(picHealth,picchina))
-            if leaders:
-                #print('put to leaders.\n')
-                try:
-                    self.leaders(last_data,this_data)
                 except:
-                    tools.cntools.logger('leaders()--'+traceback.format_exc())
-            if picchina:
-                #print('put to picchina.\n')
-                try:
-                    self.picchina(last_data,this_data)
-                except:
-                    tools.cntools.logger('picchina()--'+traceback.format_exc())
-            if health:
-                #print('put to health.\n')
-                try:
-                    self.health(last_data,this_data)
-                except:
-                    tools.cntools.logger('health()--'+traceback.format_exc())
+                    #self.headers['User-Agent'] = random.choice(self.user_agent_list)
+                    print('ArticleAnalys request error.')
 
-            if npc:
-                #print('put to npc.\n')
-                try:
-                    self.npc(last_data,this_data)
-                except:
-                    tools.cntools.logger('npc()--'+traceback.format_exc())
+                if if_continue:
+                    continue
+                res.encoding = 'GB2312'
+                html = BeautifulSoup(res.text, 'html5lib')
+                leaders = html.find('div', class_='box_con')
+                picchina = html.find('div', class_='content clear clearfix')
+                health = html.find('div', class_='artDet')
+                npc = html.find('div', id='p_content')
+                cppcc = html.find('font', class_='show_c')
+                picHealth = html.find('div', class_='text width978 clearfix')
+                last_data = {
+                    'article':'',
+                    'pic_urls':[]
+                }
+                this_data = {
+                    'save_path':save_path,
+                    'article_url':article_url,
+                    'html':html
+                }
+                # print('picHealth={},picchina={}'.format(picHealth,picchina))
+                if leaders:
+                    #print('put to leaders.\n')
+                    try:
+                        self.leaders(last_data,this_data)
+                    except:
+                        tools.cntools.logger('leaders()--'+traceback.format_exc())
+                if picchina:
+                    #print('put to picchina.\n')
+                    try:
+                        self.picchina(last_data,this_data)
+                    except:
+                        tools.cntools.logger('picchina()--'+traceback.format_exc())
+                if health:
+                    #print('put to health.\n')
+                    try:
+                        self.health(last_data,this_data)
+                    except:
+                        tools.cntools.logger('health()--'+traceback.format_exc())
 
-            if cppcc:
-                #print('put to cppcc.\n')
-                try:
-                    self.cppcc(last_data,this_data)
-                except:
-                    tools.cntools.logger('cppcc()--'+traceback.format_exc())
+                if npc:
+                    #print('put to npc.\n')
+                    try:
+                        self.npc(last_data,this_data)
+                    except:
+                        tools.cntools.logger('npc()--'+traceback.format_exc())
 
-            if picHealth:
-                #print('put to picHeath.\n')
-                try:
-                    self.picHealth(last_data,this_data)
-                except:
-                    tools.cntools.logger('picHealth()--'+traceback.format_exc())
+                if cppcc:
+                    #print('put to cppcc.\n')
+                    try:
+                        self.cppcc(last_data,this_data)
+                    except:
+                        tools.cntools.logger('cppcc()--'+traceback.format_exc())
 
-            if not (leaders
-                    or picchina
-                    or health
-                    or npc
-                    or cppcc
-                    or picHealth
-            ):
-                # print('leasers={}\npicchina={}\nhealth={}\nnpc={}\n'.format(leaders,picchina,health,npc))
-                print('url not in.')
-                fp = open('other_url.txt', 'a')
-                fp.write(this_data['article_url'] + '\n')
-                fp.close()
+                if picHealth:
+                    #print('put to picHeath.\n')
+                    try:
+                        self.picHealth(last_data,this_data)
+                    except:
+                        tools.cntools.logger('picHealth()--'+traceback.format_exc())
+
+                if not (leaders
+                        or picchina
+                        or health
+                        or npc
+                        or cppcc
+                        or picHealth
+                ):
+                    # print('leasers={}\npicchina={}\nhealth={}\nnpc={}\n'.format(leaders,picchina,health,npc))
+                    print('url not in.')
+                    fp = open('other_url.txt', 'a')
+                    fp.write(this_data['article_url'] + '\n')
+                    fp.close()
+            except:
+                print('Analyse 线程中断！')
+                tools.cntools.logger(traceback.format_exc())
 
     # leaders,society,politics(时政),finance,IT,legal,travel新版网页
     # 备注：人物（renwu）,lottery分栏的链接无法访问
@@ -556,7 +577,7 @@ class cnpeople:
             last_data['article'] = article
             last_data['pic_urls'] = picUrlList
             res = requests.get(next_url)
-            res.encoding = tools.cntools.GetCharset(res.content)
+            res.encoding = 'GB2312'
             html = BeautifulSoup(res.text,'html5lib')
             this_data['html'] = html
             self.leaders(last_data,this_data)
@@ -663,7 +684,7 @@ class cnpeople:
                 last_data['article'] = article
                 last_data['pic_urls'] = pic_urls
                 res = requests.get(next_url)
-                res.encoding = tools.cntools.GetCharset(res.content)
+                res.encoding = 'GB2312'
                 html = BeautifulSoup(res.text, 'html5lib')
                 this_data['html'] = html
                 self.picHealth(last_data, this_data)
@@ -780,7 +801,7 @@ class cnpeople:
             last_data['article'] = article
             last_data['pic_urls'] = pic_urls
             res = requests.get(next_url)
-            res.encoding = tools.cntools.GetCharset(res.content)
+            res.encoding = 'GB2312'
             html = BeautifulSoup(res.text, 'html5lib')
             this_data['html'] = html
             self.picchina(last_data, this_data)
@@ -870,6 +891,7 @@ class cnpeople:
             try:
                 #self.PicturesQueueLock.acquire()
                 pic_data = self.PicturesQueue.get(timeout=1)
+                print(f'图片：{self.PicturesQueue.qsize()}')
                 #self.PicturesQueueLock.release()
                 # break
             except queue.Empty:
@@ -879,6 +901,7 @@ class cnpeople:
                 for event in self.ArticleAnalysThreadList:
                     if event.is_alive():
                         if_end = False
+                        break
                 if if_end:
                     print('analys is out.pic download exit now.')
                     return
@@ -889,13 +912,6 @@ class cnpeople:
                     #     return
             pic_url = pic_data['pic_url']
             save_path = pic_data['save_path']
-            if_continue = False
-            for f in self.filter_box:
-                if f in pic_url:
-                    if_continue = True
-            if if_continue:
-                continue
-
             name = tools.cntools.StrToMD5(pic_url)+'.jpg'
             abs_path = save_path+name
             res = RequestGet(pic_url)
@@ -906,7 +922,6 @@ class cnpeople:
                     os.makedirs(save_path)
                 except:
                     tools.cntools.logger(traceback.format_exc())
-
             fp = open(abs_path,'wb')
             fp.write(res.content)
             fp.close()
@@ -920,6 +935,7 @@ class cnpeople:
             try:
                 #self.WriteDataQueueLock.acquire()
                 data = self.WriteDataQueue.get(timeout=1)
+                print(f'写入数据：{self.WriteDataQueue.qsize()}')
                 #self.WriteDataQueueLock.release()
                 # break
             except queue.Empty:
@@ -929,6 +945,7 @@ class cnpeople:
                 for event in self.ArticleAnalysThreadList:
                     if event.is_alive():
                         if_end = False
+                        break
                 if if_end:
                     print('analys is out.datawrite exit now.')
                     return
@@ -937,7 +954,6 @@ class cnpeople:
                     # if i >=4 :
                     #     return
             # 格式化数据
-
             title = data['title']
             article = data['article']
             from_msg = data['from_msg']
@@ -945,7 +961,7 @@ class cnpeople:
             pic_urls = data['pic_urls']
             save_path = data['save_path']
             obs_file = save_path+'data.csv'
-            print(f'write data:{save_path}:{article_url},{title}')
+            print(f'write data:{save_path}:{title},{article_url}')
             if not os.path.exists(save_path):
                 try:
                     os.makedirs(save_path)
@@ -964,9 +980,10 @@ class cnpeople:
             f_pic_urls = str(pic_urls).replace(',','|')
             id = article_url[article_url.rfind('.cn/')+4:article_url.rfind('.')].replace('/','-')
             data_line = f'{id},{f_title},{f_article},{f_from_msg},{f_pic_urls}\n'
-            data_fp = open(obs_file,'a')
-            data_fp.write(data_line)
-            data_fp.close()
+            with self.WriteDataLock:
+                data_fp = open(obs_file,'a')
+                data_fp.write(data_line)
+                data_fp.close()
 
 
     #图片过滤
@@ -1007,7 +1024,8 @@ class cnpeople:
         t_list.append(t1)
         # 文章解析线程数：4
         for i in range(self.AnalyseThreads):
-            t2 = threading.Thread(target=self.ArticleAnalys)
+            print(i)
+            t2 = threading.Thread(target=self.ArticleAnalys,args=(str(i),),name=str(i))
             t_list.append(t2)
             self.ArticleAnalysThreadList.append(t2)
 
