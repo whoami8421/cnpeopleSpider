@@ -21,7 +21,7 @@ class cnpeople:
 
     def __init__(self):
         # 关键词列表
-        self.keywords = ['绵阳',]
+        self.keywords = ['成都',]
             # ['德阳','都江堰','彭州','崇州','邛崃','简阳',
             #             '江油','广汉','什邡','绵竹','隆昌',
             #             '峨眉山','阆中','万源','马尔康',
@@ -30,7 +30,7 @@ class cnpeople:
         self.MainUrlList = []
         self.HostHeader = 'http://search.people.com.cn'
         self.BaseDir = os.path.dirname(__file__).replace('\\','/')
-        # 页面url队列
+        # 页面url任务队列
         self.PageUrlQueue = queue.Queue()
         self.PageUrlQueueLock = threading.Lock()
         # 线程数设置
@@ -107,7 +107,8 @@ class cnpeople:
             return None
     def GetFirstPage(self,url) -> dict:
         try:
-            res = requests.get(url)
+            self.headers['User-Agent'] = random.choice(self.user_agent_list)
+            res = requests.get(url,headers=self.headers)
             res.encoding = 'GB2312'
         except:
             print('FirstPage Error.')
@@ -135,7 +136,8 @@ class cnpeople:
         pattern = re.compile(r'本次检索为您找到 <b>(\d+?)</b> .+? 的页面,用时.+秒')
         res = RequestGet(main_url)
         if not res:
-           return {}
+            print('failed.')
+            return {}
         res.encoding = 'GB2312'
         main_html = BeautifulSoup(res.text,'html5lib')
         res = main_html.find('div', class_='fl w180')
@@ -151,7 +153,8 @@ class cnpeople:
             if_continue = False
             for i in range(3):
                 try:
-                    page_res = requests.get(url=page_url)
+                    self.headers['User-Agent'] = random.choice(self.user_agent_list)
+                    page_res = requests.get(url=page_url,headers = self.headers)
                 except:
                     if i==2:
                         break
@@ -196,7 +199,8 @@ class cnpeople:
     def GetContentUrls(self,start_url,save_path):
         #print(f'get content url:{start_url}')
         while(True):
-            res = requests.get(start_url)
+            self.headers['User-Agent'] = random.choice(self.user_agent_list)
+            res = requests.get(start_url,headers = self.headers)
             res.encoding = 'GB2312'
             main_html = BeautifulSoup(res.text,'html5lib')
             if_error = main_html.find('img', alt='Error')
@@ -576,7 +580,8 @@ class cnpeople:
                 next_url = host_url + next_url
             last_data['article'] = article
             last_data['pic_urls'] = picUrlList
-            res = requests.get(next_url)
+            self.headers['User-Agent'] = random.choice(self.user_agent_list)
+            res = requests.get(next_url,headers = self.headers)
             res.encoding = 'GB2312'
             html = BeautifulSoup(res.text,'html5lib')
             this_data['html'] = html
@@ -683,7 +688,8 @@ class cnpeople:
                     next_url = host_url + next_url
                 last_data['article'] = article
                 last_data['pic_urls'] = pic_urls
-                res = requests.get(next_url)
+                self.headers['User-Agent'] = random.choice(self.user_agent_list)
+                res = requests.get(next_url,headers = self.headers)
                 res.encoding = 'GB2312'
                 html = BeautifulSoup(res.text, 'html5lib')
                 this_data['html'] = html
@@ -800,7 +806,8 @@ class cnpeople:
                 next_url = host_url + next_url
             last_data['article'] = article
             last_data['pic_urls'] = pic_urls
-            res = requests.get(next_url)
+            self.headers['User-Agent'] = random.choice(self.user_agent_list)
+            res = requests.get(next_url,headers = self.headers)
             res.encoding = 'GB2312'
             html = BeautifulSoup(res.text, 'html5lib')
             this_data['html'] = html
@@ -968,7 +975,7 @@ class cnpeople:
                 except:
                     tools.cntools.logger(traceback.format_exc())
             if not os.path.exists(obs_file):
-                first_line ='p_id,p_content,p_time,p_pictures\n'
+                first_line ='p_id,p_title,p_content,p_time,p_pictures\n'
                 fp = open(obs_file,'w')
                 fp.write(first_line)
                 fp.close()
@@ -1018,6 +1025,7 @@ class cnpeople:
         # 至少四线程
         # 获取文章url、文章数据解析下载、图片下载、文章格式化写入
         t_list = []
+        print(self.MainUrlList)
         for main_url in self.MainUrlList:
             self.PageInIt(main_url)
         t1 = threading.Thread(target=self.GetPageThreads)
